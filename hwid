@@ -1,1 +1,877 @@
-087296F1-0378-4FEF-B6F5-15DD9B122FD0
+
+local campfireCFrame = CFrame.new(5.10004997, 5.99994278, -1.50001144,
+    0.250074446, -0.433025897, 0.865997255,
+    0.865997255, 0.500048637, -3.43620777e-05,
+    -0.433025897, 0.749959946, 0.500048637)
+
+local function UpdateSackInfo()
+    local inventory = LocalPlayer:FindFirstChild("Inventory")
+    if inventory then
+        if inventory:FindFirstChild("Giant Sack") then
+            CurrentSack = "Giant Sack"
+            CurrentSackCapacity = 25
+        elseif inventory:FindFirstChild("Good Sack") then
+            CurrentSack = "Good Sack"
+            CurrentSackCapacity = 15
+        elseif inventory:FindFirstChild("Old Sack") then
+            CurrentSack = "Old Sack"
+            CurrentSackCapacity = 5
+        else
+            CurrentSack = nil
+            CurrentSackCapacity = 5
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        UpdateSackInfo()
+        task.wait(SACK_CHECK_INTERVAL)
+    end
+end)
+
+local Categories = {
+    ["Scrap Items"] = {"Sheet Metal", "Old Radio", "Bolt", "Tyre", "Broken Microwave", "Broken Fan"},
+    ["Food Items"] = {"Carrot", "Berry", "Apple", "Morsel", "Steak"},
+    ["Healing Items"] = {"Bandage", "MedKit"},
+    ["Fuel Items"] = {"Coal", "Oil Barrel", "Fuel Canister", "Log", "Sapling"},
+    ["Ammo Items"] = {"RevolverAmmo", "Rifle Ammo"},
+    ["Misc Items"] = {"Old FlashLight", "Bunny Foot", "Cultist Gem"}
+}
+
+function safeTeleport(cframe)
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        
+        if humanoid and rootPart then
+            humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+            rootPart.Anchored = true
+            rootPart.CFrame = cframe
+            task.wait()
+            rootPart.Anchored = false
+            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            task.wait(0.1)
+        end
+    end
+end
+
+function checkInventory()
+    local inventory = LocalPlayer:FindFirstChild("Inventory")
+    if not inventory then return false end
+    
+    local sack = inventory:FindFirstChild(CurrentSack or "Old Sack")
+    if sack then
+        local capacity = sack:GetAttribute("Capacity") or CurrentSackCapacity
+        local numItems = sack:GetAttribute("NumberItems") or 0
+        
+        if capacity and numItems and capacity <= numItems then
+            safeTeleport(CFrame.new(FULL_INVENTORY_POSITION))
+            task.wait(2)
+            return true
+        end
+    end
+    return false
+end
+
+function collectNearbyItems(centerPosition, itemName)
+    local collectedCount = 0
+    for _, item in ipairs(ItemsFolder:GetChildren()) do
+        if not ItemCollectionActive then break end
+        if item.Name == itemName and item:IsA("Model") and not collectedItems[item] then
+            local primaryPart = item:FindFirstChild("PrimaryPart") or item:FindFirstChildWhichIsA("BasePart")
+            if primaryPart then
+                local distance = (centerPosition - primaryPart.Position).Magnitude
+                if distance <= COLLECTION_RADIUS then
+                    local storeArgs = {
+                        LocalPlayer:WaitForChild("Inventory"):WaitForChild(CurrentSack or "Old Sack"),
+                        item
+                    }
+                    
+                    pcall(function()
+                        StoreRemote:InvokeServer(unpack(storeArgs))
+                        collectedItems[item] = true
+                        collectedCount = collectedCount + 1
+                        delay(60, function() collectedItems[item] = nil end)
+                        
+                        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Head") then
+                            SoundRemote:FireServer("FireAllClients", "BagGet", {
+                                Instance = LocalPlayer.Character.Head,
+                                Volume = 0.25
+                            })
+                        end
+                    end)
+                    
+                    if checkInventory() then
+                        return "inventory_full"
+                    end
+                    
+                    task.wait(ITEM_PICKUP_DELAY)
+                end
+            end
+        end
+    end
+    return collectedCount
+end
+
+function collectAllSelectedItems()
+    while ItemCollectionActive do
+        if checkInventory() then
+            task.wait(1)
+            continue
+        end
+        
+        for itemName, isSelected in pairs(selectedItems) do
+            if not ItemCollectionActive then break end
+            if isSelected then
+                for _, item in ipairs(ItemsFolder:GetChildren()) do
+                    if not ItemCollectionActive then break end
+                    if item.Name == itemName and item:IsA("Model") and not collectedItems[item] then
+                        local primaryPart = item:FindFirstChild("PrimaryPart") or item:FindFirstChildWhichIsA("BasePart")
+                        if primaryPart then
+                            safeTeleport(primaryPart.CFrame * CFrame.new(0, 0, 3))
+                            
+                            local result = collectNearbyItems(primaryPart.Position, itemName)
+                            
+                            if result == "inventory_full" then
+                                break
+                            end
+                        end
+                        
+                        task.wait(TELEPORT_DELAY)
+                    end
+                end
+            end
+        end
+        
+        task.wait(0.5)
+    end
+end
+
+function startItemCollection()
+    if currentCollectionTask then
+        task.cancel(currentCollectionTask)
+    end
+    
+    ItemCollectionActive = true
+    collectedItems = {}
+    
+    task.spawn(function()
+        while ItemCollectionActive do
+            checkInventory()
+            task.wait(INVENTORY_CHECK_DELAY)
+        end
+    end)
+    
+    currentCollectionTask = task.spawn(collectAllSelectedItems)
+end
+
+function stopItemCollection()
+    ItemCollectionActive = false
+    if currentCollectionTask then
+        task.cancel(currentCollectionTask)
+        currentCollectionTask = nil
+    end
+end
+
+local function UpdateESP()
+    if not ESPEnabled then
+        for model, highlight in pairs(HighlightedModels) do
+            if highlight and highlight.Parent then
+                highlight:Destroy()
+            end
+        end
+        HighlightedModels = {}
+        return
+    end
+
+    for _, model in pairs(CharactersFolder:GetChildren()) do
+        if model:IsA("Model") and not HighlightedModels[model] then
+            local nameLower = string.lower(model.Name)
+            if table.find({"wolf", "bunny", "deer", "kid", "cultist", "crossbow cultist"}, nameLower) then
+                local highlight = Instance.new("Highlight")
+                highlight.Adornee = model
+                highlight.FillColor = Color3.fromRGB(0, 255, 0)
+                highlight.OutlineColor = Color3.fromRGB(0, 255, 0)
+                highlight.Parent = model
+                HighlightedModels[model] = highlight
+            end
+        end
+    end
+end
+
+local function InfTreeChopReach()
+    if not FoliageFolder then return end
+    
+    local char = LocalPlayer.Character
+    local torso = char and char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+    if not torso then return end
+    
+    local count = 0
+    for _, tree in pairs(FoliageFolder:GetDescendants()) do
+        if tree:IsA("Model") and tree.Name == "Small Tree" then
+            local trunk = tree:FindFirstChild("Trunk") or tree:FindFirstChildWhichIsA("BasePart")
+            if trunk then
+                if not OriginalTreePositions[trunk] then
+                    OriginalTreePositions[trunk] = {CFrame = trunk.CFrame, CanCollide = trunk.CanCollide}
+                end
+                trunk.CFrame = torso.CFrame
+                trunk.CanCollide = false
+                count += 1
+            end
+        end
+    end
+end
+
+local function ResetTreeChopReach()
+    for part, data in pairs(OriginalTreePositions) do
+        if part and part.Parent then
+            part.CFrame = data.CFrame
+            part.CanCollide = data.CanCollide
+        end
+    end
+    OriginalTreePositions = {}
+end
+
+local function UpdateEnemyHitboxes()
+    for _, model in pairs(CharactersFolder:GetChildren()) do
+        if model:IsA("Model") then
+            if table.find({"Wolf", "Bunny"}, model.Name) and AnimalHitboxEnabled then
+                local head = model:FindFirstChild("Head")
+                if head then
+                    if not OriginalAnimalSizes[head] then
+                        OriginalAnimalSizes[head] = head.Size
+                        OriginalAnimalProperties[head] = {
+                            CanCollide = head.CanCollide,
+                            Transparency = head.Transparency
+                        }
+                    end
+                    head.Size = OriginalAnimalSizes[head] * AnimalHitboxMultiplier
+                    head.CanCollide = false
+                    head.Transparency = 1
+                end
+            end
+            
+            if table.find({"Cultist", "Crossbow Cultist"}, model.Name) and CultistHitboxEnabled then
+                local head = model:FindFirstChild("Head") or model:FindFirstChildWhichIsA("BasePart")
+                if head then
+                    if not OriginalCultistSizes[head] then
+                        OriginalCultistSizes[head] = head.Size
+                        OriginalCultistProperties[head] = {
+                            CanCollide = head.CanCollide,
+                            Transparency = head.Transparency
+                        }
+                    end
+                    head.Size = OriginalCultistSizes[head] * CultistHitboxMultiplier
+                    head.CanCollide = false
+                    head.Transparency = 1
+                end
+            end
+        end
+    end
+end
+
+local function ResetHitboxes()
+    for part, data in pairs(OriginalAnimalSizes) do
+        if part and part.Parent then
+            part.Size = data
+            part.CanCollide = OriginalAnimalProperties[part].CanCollide
+            part.Transparency = OriginalAnimalProperties[part].Transparency
+        end
+    end
+    
+    for part, data in pairs(OriginalCultistSizes) do
+        if part and part.Parent then
+            part.Size = data
+            part.CanCollide = OriginalCultistProperties[part].CanCollide
+            part.Transparency = OriginalCultistProperties[part].Transparency
+        end
+    end
+    
+    OriginalAnimalSizes = {}
+    OriginalAnimalProperties = {}
+    OriginalCultistSizes = {}
+    OriginalCultistProperties = {}
+end
+
+local function SafeTeleportEnemies()
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local count = 0
+    for _, model in pairs(CharactersFolder:GetChildren()) do
+        if model:IsA("Model") then
+            local name = model.Name
+            if name == "Wolf" or name == "Bunny" or name == "Cultist" or name == "Crossbow Cultist" then
+                local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart")
+                if root then
+                    root.CFrame = hrp.CFrame * CFrame.new(0, 0, -5)
+                    root.Velocity = Vector3.new(0, 0, 0)
+                    count += 1
+                end
+            end
+        end
+    end
+end
+
+local function ToggleInstantPrompts(enabled)
+    InstantPromptsEnabled = enabled
+    if enabled then
+        for _, prompt in ipairs(Workspace:GetDescendants()) do
+            if prompt.ClassName == "ProximityPrompt" then
+                if not OriginalPromptDurations[prompt] then
+                    OriginalPromptDurations[prompt] = prompt.HoldDuration
+                end
+                prompt.HoldDuration = 0
+            end
+        end
+    else
+        for prompt, duration in pairs(OriginalPromptDurations) do
+            if prompt and prompt.Parent then
+                prompt.HoldDuration = duration
+            end
+        end
+        OriginalPromptDurations = {}
+    end
+end
+
+local previousStews = {}
+local crockPot = nil
+local touchZone = nil
+local stewOutputPosition = Vector3.new(0, 10, 0)
+
+local function findCrockPot()
+    if crockPot and crockPot.Parent and touchZone and touchZone.Parent then
+        return true
+    end
+    
+    local structures = workspace:FindFirstChild("Structures")
+    if not structures then return false end
+    
+    crockPot = structures:FindFirstChild("Crock Pot")
+    if not crockPot then return false end
+    
+    touchZone = crockPot:FindFirstChild("TouchZone")
+    if not touchZone then
+        crockPot = nil
+        return false
+    end
+    
+    return true
+end
+
+local function isCarrot(item)
+    return item.Name == "Carrot" and item:IsA("Model")
+end
+
+local function isStew(item)
+    return item.Name == "Stew" and item:IsA("Model")
+end
+
+local function teleportToTouchZone(model)
+    if not findCrockPot() then return false end
+    
+    if not model.PrimaryPart then
+        local mainPart = model:FindFirstChildWhichIsA("BasePart")
+        if mainPart then
+            model.PrimaryPart = mainPart
+        else
+            return false
+        end
+    end
+
+    local randomOffset = Vector3.new(math.random(-2,2), 0, math.random(-2,2))
+    model:SetPrimaryPartCFrame(CFrame.new(touchZone.Position + randomOffset))
+    return true
+end
+
+local function nudgeModel(model)
+    if not model.PrimaryPart then return end
+    local pos = model.PrimaryPart.Position
+    local nudge = Vector3.new(math.random(-1,1), 0, math.random(-1,1))
+    model:SetPrimaryPartCFrame(CFrame.new(pos + nudge))
+end
+
+local function teleportStewOut(model)
+    if not model.PrimaryPart then return end
+    model:SetPrimaryPartCFrame(CFrame.new(stewOutputPosition))
+end
+
+local function TeleportToCampfire()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.CFrame = campfireCFrame
+    end
+end
+
+local function TeleportToNextChest()
+    if chestTeleportCooldown then return end
+    
+    local chests = {}
+    for _, item in pairs(ItemsFolder:GetDescendants()) do
+        if item:IsA("Model") and item.Name:match("^Item Chest%d*$") then
+            table.insert(chests, item)
+        end
+    end
+    
+    if #chests == 0 then return end
+    
+    table.sort(chests, function(a, b)
+        return a.Name < b.Name
+    end)
+    
+    lastTeleportedChestIndex = (lastTeleportedChestIndex % #chests) + 1
+    local targetChest = chests[lastTeleportedChestIndex]
+    
+    local primaryPart = targetChest.PrimaryPart or targetChest:FindFirstChildWhichIsA("BasePart")
+    if not primaryPart then return end
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    local offset = CFrame.new(0, 0, -3)
+    hrp.CFrame = primaryPart.CFrame * offset
+    
+    chestTeleportCooldown = true
+    task.delay(3, function()
+        chestTeleportCooldown = false
+    end)
+end
+
+local function ToggleMapExploration(state)
+    MapExplorationEnabled = state
+
+    local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+    local FogModel = MapFolder:WaitForChild("Boundaries"):WaitForChild("Fog")
+
+    local stepDistance = 75
+    local center = Vector3.new(0, 0, 0)
+    local count = 0
+
+    for _, part in pairs(FogModel:GetChildren()) do
+        if part:IsA("BasePart") then
+            center = center + part.Position
+            count = count + 1
+        end
+    end
+
+    if count == 0 then return end
+
+    center = center / count
+
+    local maxRadius = 0
+    for _, part in pairs(FogModel:GetChildren()) do
+        if part:IsA("BasePart") then
+            local dist = (part.Position - center).Magnitude
+            if dist > maxRadius then
+                maxRadius = dist
+            end
+        end
+    end
+
+    local function FinishExploring()
+        HumanoidRootPart.Anchored = false
+        HumanoidRootPart.CFrame = campfireCFrame
+    end
+
+    if state then
+        spawn(function()
+            local Y = HumanoidRootPart.Position.Y + 50
+            local oldAnchored = HumanoidRootPart.Anchored
+            HumanoidRootPart.Anchored = true
+
+            for radius = 0, maxRadius, stepDistance do
+                local points = math.max(8, math.floor(2 * math.pi * radius / stepDistance))
+
+                for i = 1, points do
+                    if not MapExplorationEnabled then
+                        FinishExploring()
+                        return
+                    end
+
+                    local angle = (i / points) * (2 * math.pi)
+                    local x = center.X + math.cos(angle) * radius
+                    local z = center.Z + math.sin(angle) * radius
+
+                    HumanoidRootPart.CFrame = CFrame.new(x, Y, z)
+                    task.wait(0.5)
+                end
+            end
+
+            FinishExploring()
+        end)
+    else
+        FinishExploring()
+    end
+end
+
+local function ToggleFMacro(state)
+    FMacroEnabled = state
+
+    if state then
+        spawn(function()
+            while FMacroEnabled do
+                game:GetService("VirtualInputManager"):SendKeyEvent(true, "F", false, game)
+                task.wait(0.05)
+                game:GetService("VirtualInputManager"):SendKeyEvent(false, "F", false, game)
+                task.wait(0.05)
+            end
+        end)
+    end
+end
+
+local Window = Rayfield:CreateWindow({
+    Name = "99 Nights",
+    LoadingTitle = "Survival Script",
+    ConfigurationSaving = {Enabled = true, FolderName = "99NightsConfig"},
+    KeySystem = false
+})
+
+local TeleportTab = Window:CreateTab("Teleport", 4483362458)
+TeleportTab:CreateSection("Locations")
+TeleportTab:CreateButton({Name = "Teleport to Campfire", Callback = TeleportToCampfire})
+TeleportTab:CreateButton({Name = "Teleport to Next Chest", Callback = TeleportToNextChest})
+
+TeleportTab:CreateSection("Lost Children")
+
+TeleportTab:CreateButton({
+    Name = "Teleport to Dino Kid",
+    Callback = function()
+        local kid = Workspace.Characters:FindFirstChild("Lost Child")
+        if kid then
+            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local targetCFrame = kid:FindFirstChild("HumanoidRootPart") and kid.HumanoidRootPart.CFrame or kid:GetPivot()
+                hrp.CFrame = targetCFrame * CFrame.new(0, 0, -3)
+            end
+        end
+    end
+})
+
+TeleportTab:CreateButton({
+    Name = "Teleport to Kraken Kid",
+    Callback = function()
+        local kid = Workspace.Characters:FindFirstChild("Lost Child1")
+        if kid then
+            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local targetCFrame = kid:FindFirstChild("HumanoidRootPart") and kid.HumanoidRootPart.CFrame or kid:GetPivot()
+                hrp.CFrame = targetCFrame * CFrame.new(0, 0, -3)
+            end
+        end
+    end
+})
+
+TeleportTab:CreateButton({
+    Name = "Teleport to Squid Kid",
+    Callback = function()
+        local kid = Workspace.Characters:FindFirstChild("Lost Child2")
+        if kid then
+            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local targetCFrame = kid:FindFirstChild("HumanoidRootPart") and kid.HumanoidRootPart.CFrame or kid:GetPivot()
+                hrp.CFrame = targetCFrame * CFrame.new(0, 0, -3)
+            end
+        end
+    end
+})
+
+TeleportTab:CreateButton({
+    Name = "Teleport to Koala Kid",
+    Callback = function()
+        local kid = Workspace.Characters:FindFirstChild("Lost Child3")
+        if kid then
+            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local targetCFrame = kid:FindFirstChild("HumanoidRootPart") and kid.HumanoidRootPart.CFrame or kid:GetPivot()
+                hrp.CFrame = targetCFrame * CFrame.new(0, 0, -3)
+            end
+        end
+    end
+})
+
+local ESPTab = Window:CreateTab("ESP", 4483362458)
+ESPTab:CreateToggle({
+    Name = "Enable ESP",
+    CurrentValue = false,
+    Callback = function(state)
+        ESPEnabled = state
+        if not state then
+            for model, highlight in pairs(HighlightedModels) do
+                if highlight then highlight:Destroy() end
+            end
+            HighlightedModels = {}
+        end
+    end
+})
+
+local ItemCollectionTab = Window:CreateTab("Item Collection", 4483362458)
+
+for categoryName, items in pairs(Categories) do
+    ItemCollectionTab:CreateSection(categoryName)
+    
+    for _, itemName in ipairs(items) do
+        ItemCollectionTab:CreateToggle({
+            Name = "Collect " .. itemName,
+            CurrentValue = false,
+            Callback = function(state)
+                selectedItems[itemName] = state
+                
+                local anyActive = false
+                for _, isSelected in pairs(selectedItems) do
+                    if isSelected then
+                        anyActive = true
+                        break
+                    end
+                end
+                
+                if anyActive and not ItemCollectionActive then
+                    startItemCollection()
+                elseif not anyActive and ItemCollectionActive then
+                    stopItemCollection()
+                end
+            end
+        })
+    end
+end
+
+ItemCollectionTab:CreateSection("Controls")
+ItemCollectionTab:CreateButton({Name = "Start Collection", Callback = startItemCollection})
+ItemCollectionTab:CreateButton({Name = "Stop Collection", Callback = stopItemCollection})
+ItemCollectionTab:CreateSlider({
+    Name = "Collection Radius",
+    Range = {5, 50},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = COLLECTION_RADIUS,
+    Callback = function(value) COLLECTION_RADIUS = value end
+})
+ItemCollectionTab:CreateSlider({
+    Name = "Teleport Delay",
+    Range = {0.1, 1},
+    Increment = 0.1,
+    Suffix = "seconds",
+    CurrentValue = TELEPORT_DELAY,
+    Callback = function(value) TELEPORT_DELAY = value end
+})
+
+local HitboxTab = Window:CreateTab("Hitboxes", 4483362458)
+
+HitboxTab:CreateSection("Trees")
+HitboxTab:CreateButton({Name = "Inf Tree Chop Reach", Callback = InfTreeChopReach})
+HitboxTab:CreateButton({Name = "Reset Trees", Callback = ResetTreeChopReach})
+
+HitboxTab:CreateSection("Animals")
+HitboxTab:CreateToggle({
+    Name = "Expand Animal Hitboxes",
+    CurrentValue = false,
+    Callback = function(state)
+        AnimalHitboxEnabled = state
+        if state then UpdateEnemyHitboxes() end
+    end
+})
+HitboxTab:CreateSlider({
+    Name = "Animal Hitbox Size",
+    Range = {1, 25},
+    Increment = 1,
+    Suffix = "x",
+    CurrentValue = 5,
+    Callback = function(value)
+        AnimalHitboxMultiplier = value
+        if AnimalHitboxEnabled then UpdateEnemyHitboxes() end
+    end
+})
+HitboxTab:CreateButton({Name = "Teleport Enemies to Me", Callback = SafeTeleportEnemies})
+HitboxTab:CreateToggle({
+    Name = "Auto-Teleport Enemies",
+    CurrentValue = false,
+    Callback = function(state)
+        TeleportEnemiesEnabled = state
+    end
+})
+
+HitboxTab:CreateSection("Cultists")
+HitboxTab:CreateToggle({
+    Name = "Expand Cultist Hitboxes",
+    CurrentValue = false,
+    Callback = function(state)
+        CultistHitboxEnabled = state
+        if state then UpdateEnemyHitboxes() end
+    end
+})
+HitboxTab:CreateSlider({
+    Name = "Cultist Hitbox Size",
+    Range = {1, 25},
+    Increment = 1,
+    Suffix = "x",
+    CurrentValue = 5,
+    Callback = function(value)
+        CultistHitboxMultiplier = value
+        if CultistHitboxEnabled then UpdateEnemyHitboxes() end
+    end
+})
+HitboxTab:CreateButton({Name = "Reset All Hitboxes", Callback = ResetHitboxes})
+
+local CookingTab = Window:CreateTab("Cooking", 4483362458)
+local stewStatusLabel = CookingTab:CreateLabel("Crock Pot Status: Searching...")
+
+CookingTab:CreateToggle({
+    Name = "Auto Stew Maker",
+    CurrentValue = false,
+    Flag = "AutoStewToggle",
+    Callback = function(Value)
+        AutoStew = Value
+
+        if AutoStew then
+            spawn(function()
+                while AutoStew do
+                    if not findCrockPot() then
+                        stewStatusLabel:Set("Crock Pot Status: Not Found â")
+                        task.wait(5)
+                        continue
+                    end
+
+                    stewStatusLabel:Set("Crock Pot Status: Found â")
+                    task.wait(1)
+
+                    for _, item in ipairs(ItemsFolder:GetChildren()) do
+                        if isCarrot(item) then
+                            teleportToTouchZone(item)
+                        end
+                    end
+
+                    for _, item in ipairs(ItemsFolder:GetChildren()) do
+                        if isCarrot(item) then
+                            nudgeModel(item)
+                        end
+                    end
+
+                    local currentStews = {}
+                    for _, item in ipairs(ItemsFolder:GetChildren()) do
+                        if isStew(item) then
+                            currentStews[item] = true
+                            if not previousStews[item] then
+                                teleportStewOut(item)
+                            end
+                        end
+                    end
+
+                    previousStews = currentStews
+                    task.wait(1)
+                end
+            end)
+        end
+    end
+})
+
+local MiscTab = Window:CreateTab("Misc", 4483362458)
+MiscTab:CreateToggle({
+    Name = "Instant Interact Prompts",
+    CurrentValue = false,
+    Callback = ToggleInstantPrompts
+})
+
+MiscTab:CreateSection("Map Tools")
+MiscTab:CreateToggle({
+    Name = "Auto Explore Map",
+    CurrentValue = false,
+    Callback = ToggleMapExploration
+})
+
+MiscTab:CreateSection("Macros")
+MiscTab:CreateToggle({
+    Name = "F Macro (Pickup)",
+    CurrentValue = false,
+    Callback = ToggleFMacro
+})
+MiscTab:CreateSection("Character Controls")
+
+MiscTab:CreateSlider({
+    Name = "WalkSpeed",
+    Range = {16, 100},
+    Increment = 1,
+    Suffix = "studs/sec",
+    CurrentValue = 16,
+    Callback = function(value)
+        local character = LocalPlayer.Character
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid.WalkSpeed = value
+            end
+        end
+    end
+})
+
+local lastESPUpdate = 0
+local lastHitboxUpdate = 0
+
+RunService.Heartbeat:Connect(function()
+    local now = tick()
+    
+    if ESPEnabled and now - lastESPUpdate > 1 then
+        UpdateESP()
+        lastESPUpdate = now
+    end
+
+    if TeleportEnemiesEnabled then
+        SafeTeleportEnemies()
+    end
+    
+    if (AnimalHitboxEnabled or CultistHitboxEnabled) and now - lastHitboxUpdate > 0.5 then
+        UpdateEnemyHitboxes()
+        lastHitboxUpdate = now
+    end
+end)
+
+CharactersFolder.ChildAdded:Connect(function(child)
+    if child:IsA("Model") then
+        if table.find({"Wolf", "Bunny", "Cultist", "Crossbow Cultist"}, child.Name) then
+            if AnimalHitboxEnabled or CultistHitboxEnabled then 
+                task.wait(0.5); UpdateEnemyHitboxes() 
+            end
+            if TeleportEnemiesEnabled then 
+                task.wait(0.5); SafeTeleportEnemies()
+            end
+            if ESPEnabled then
+                task.wait(0.5); UpdateESP()
+            end
+        end
+    end
+end)
+
+Workspace.DescendantAdded:Connect(function(descendant)
+    if InstantPromptsEnabled and descendant.ClassName == "ProximityPrompt" then
+        if not OriginalPromptDurations[descendant] then
+            OriginalPromptDurations[descendant] = descendant.HoldDuration
+        end
+        descendant.HoldDuration = 0
+    end
+end)
+UpdateSackInfo()
+
+spawn(function()
+    while true do
+        if findCrockPot() then
+            stewStatusLabel:Set("Crock Pot Status: Found â")
+        else
+            stewStatusLabel:Set("Crock Pot Status: Not Found â")
+        end
+        task.wait(10)
+    end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function(character)
+    task.wait(1)
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = CurrentWalkSpeed
+    end
+end)
